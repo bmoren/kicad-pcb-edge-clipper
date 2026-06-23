@@ -1,0 +1,21 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "com.benmoren.edge-clip",
+  "name": "edge-clip",
+  "description": "Clips graphics on a chosen layer to the board outline defined on Edge.Cuts. Removes overhang so Gerber extents match the real board size.",
+  "runtime": {
+    "type": "python"
+  },
+  "actions": [
+    {
+      "identifier": "clip-to-edge-cuts",
+      "name": "Clip to Edge.Cuts",
+      "description": "Clips F.Mask graphics to the board outline with a 0.3 mm inset so Gerber extents equal the true board size",
+      "show-button": true,
+      "scopes": ["pcb"],
+      "entrypoint": "ipc_entry.py",
+      "icons-light": ["icon.png"],
+      "icons-dark": ["icon.png"]
+    }
+  ]
+}

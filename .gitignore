@@ -1,0 +1,7 @@
+# KiCad creates a per-plugin venv on first load
+venv/
+.venv/
+
+__pycache__/
+*.pyc
+*.pyo
