@@ -39,8 +39,9 @@ TARGET_LAYERS = {
 
 # ── Other config ──────────────────────────────────────────────────────────────
 
-INSET_MM = 0.3    # pull clip boundary inward from Edge.Cuts (0 = flush)
-ARC_SEGS = 72     # segments used to discretize one full circle
+INSET_MM        = 0.3   # pull clip boundary inward from Edge.Cuts (0 = flush)
+ARC_SEGS        = 72    # segments used to discretize one full circle
+SNAP_TOLERANCE  = 0.5   # snap Edge.Cuts endpoints within this many mm (closes connector slots etc.)
 
 # ── Unit helpers ─────────────────────────────────────────────────────────────
 
@@ -100,6 +101,67 @@ def _bezier_coords(p0, p1, p2, p3):
         y = u**3*p0[1] + 3*u**2*t*p1[1] + 3*u*t**2*p2[1] + t**3*p3[1]
         pts.append((x, y))
     return pts
+
+# ── Endpoint snapping ────────────────────────────────────────────────────────
+
+def _snap_endpoints(lines):
+    """
+    Snap nearby LineString endpoints so polygonize can close small gaps.
+    Uses Union-Find to cluster endpoints within SNAP_TOLERANCE mm and
+    replaces each cluster with its centroid.  Interior arc/bezier points
+    are untouched.  Returns a new list with degenerate (zero-length) lines
+    removed.
+    """
+    if not lines:
+        return lines
+
+    # Enumerate one start + one end coordinate per line
+    eps = []  # [(x, y, line_index, is_end)]
+    for i, line in enumerate(lines):
+        coords = list(line.coords)
+        eps.append([coords[0][0],  coords[0][1],  i, False])
+        eps.append([coords[-1][0], coords[-1][1], i, True])
+
+    n = len(eps)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    tol2 = SNAP_TOLERANCE ** 2
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = eps[i][0] - eps[j][0]
+            dy = eps[i][1] - eps[j][1]
+            if dx*dx + dy*dy < tol2:
+                px, py = find(i), find(j)
+                if px != py:
+                    parent[px] = py
+
+    clusters: dict = {}
+    for i, ep in enumerate(eps):
+        root = find(i)
+        clusters.setdefault(root, []).append((ep[0], ep[1]))
+
+    centroids = {
+        root: (sum(p[0] for p in pts) / len(pts),
+               sum(p[1] for p in pts) / len(pts))
+        for root, pts in clusters.items()
+    }
+
+    result = []
+    for idx, line in enumerate(lines):
+        coords   = list(line.coords)
+        new_s    = centroids[find(idx * 2)]
+        new_e    = centroids[find(idx * 2 + 1)]
+        if math.hypot(new_s[0] - new_e[0], new_s[1] - new_e[1]) < 1e-9:
+            continue  # degenerate after snapping — drop it
+        result.append(LineString([new_s] + coords[1:-1] + [new_e]))
+
+    return result
 
 # ── Edge.Cuts → Shapely line strings ─────────────────────────────────────────
 
@@ -253,6 +315,8 @@ def main():
     if not lines:
         print("[edge-clip] ERROR: No Edge.Cuts shapes found.", file=sys.stderr)
         sys.exit(1)
+
+    lines = _snap_endpoints(lines)
 
     board_polys = list(polygonize(unary_union(lines)))
     if not board_polys:
