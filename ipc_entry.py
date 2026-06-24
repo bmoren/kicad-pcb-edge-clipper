@@ -15,8 +15,8 @@ from shapely.ops import polygonize, unary_union
 
 from kipy.kicad import KiCad
 from kipy.board_types import (
-    BoardArc, BoardCircle, BoardPolygon, BoardRectangle, BoardSegment, BoardShape,
-    BoardLayer, to_concrete_board_shape,
+    BoardArc, BoardBezier, BoardCircle, BoardPolygon, BoardRectangle, BoardSegment,
+    BoardShape, BoardLayer, to_concrete_board_shape,
 )
 from kipy.proto.board import board_types_pb2
 
@@ -82,6 +82,25 @@ def _arc_coords(start, mid, end):
     return [(ux + r*math.cos(a0 + sweep*i/n), uy + r*math.sin(a0 + sweep*i/n))
             for i in range(n + 1)]
 
+# ── Cubic Bezier discretization ──────────────────────────────────────────────
+
+def _bezier_coords(p0, p1, p2, p3):
+    """Return (x,y) sample points along a cubic Bezier curve (all in mm)."""
+    # Adaptive segment count: estimate curve length from control polygon
+    chord = math.hypot(p3[0]-p0[0], p3[1]-p0[1])
+    hull  = (math.hypot(p1[0]-p0[0], p1[1]-p0[1]) +
+             math.hypot(p2[0]-p1[0], p2[1]-p1[1]) +
+             math.hypot(p3[0]-p2[0], p3[1]-p2[1]))
+    n = max(4, int((chord + hull) / 2 * ARC_SEGS / (2 * math.pi * 10)))
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        u = 1 - t
+        x = u**3*p0[0] + 3*u**2*t*p1[0] + 3*u*t**2*p2[0] + t**3*p3[0]
+        y = u**3*p0[1] + 3*u**2*t*p1[1] + 3*u*t**2*p2[1] + t**3*p3[1]
+        pts.append((x, y))
+    return pts
+
 # ── Edge.Cuts → Shapely line strings ─────────────────────────────────────────
 
 def _edge_to_lines(shape):
@@ -104,6 +123,14 @@ def _edge_to_lines(shape):
         x1, y1 = _mm(shape.top_left.x),     _mm(shape.top_left.y)
         x2, y2 = _mm(shape.bottom_right.x), _mm(shape.bottom_right.y)
         return [LineString([(x1,y1),(x2,y1),(x2,y2),(x1,y2),(x1,y1)])]
+    if isinstance(shape, BoardBezier):
+        pts = _bezier_coords(
+            (_mm(shape.start.x),    _mm(shape.start.y)),
+            (_mm(shape.control1.x), _mm(shape.control1.y)),
+            (_mm(shape.control2.x), _mm(shape.control2.y)),
+            (_mm(shape.end.x),      _mm(shape.end.y)),
+        )
+        return [LineString(pts)]
     if isinstance(shape, BoardPolygon):
         lines = []
         for pwh in shape.polygons:
@@ -232,7 +259,15 @@ def main():
         print("[edge-clip] ERROR: Edge.Cuts do not form a closed polygon.", file=sys.stderr)
         sys.exit(1)
 
-    board_poly  = max(board_polys, key=lambda p: p.area)
+    # Largest polygon = outer board boundary.
+    # Smaller polygons contained within it = interior cutouts (slots, holes).
+    board_polys.sort(key=lambda p: p.area, reverse=True)
+    outer  = board_polys[0]
+    holes  = [p for p in board_polys[1:] if outer.contains(p.centroid)]
+    board_poly = outer.difference(unary_union(holes)) if holes else outer
+    if holes:
+        print(f"[edge-clip] Interior cutouts detected: {len(holes)}")
+
     clip_region = board_poly.buffer(-INSET_MM) if INSET_MM > 0 else board_poly
 
     if clip_region.is_empty:
